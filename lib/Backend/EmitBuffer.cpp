@@ -407,15 +407,21 @@ bool EmitBufferManager<TAlloc, TPreReservedAlloc, SyncObject>::CommitBufferForIn
 //      Copies contents of source buffer to the destination buffer - at max of one page at a time.
 //      This ensures that only 1 page is writable at any point of time.
 //      Commit a buffer from the last AllocateBuffer call that is filled.
+//
+// Skips over the initial allocation->GetBytesUsed() bytes of destBuffer.  Then, fills in `alignPad` bytes with debug breakpoint instructions,
+// copies `bytes` bytes from sourceBuffer, and finally fills in the rest of destBuffer with debug breakpoint instructions.
 //----------------------------------------------------------------------------
 template <typename TAlloc, typename TPreReservedAlloc, class SyncObject>
 bool
-EmitBufferManager<TAlloc, TPreReservedAlloc, SyncObject>::CommitBuffer(TEmitBufferAllocation* allocation, __out_bcount(bytes) BYTE* destBuffer, __in size_t bytes, __in_bcount(bytes) const BYTE* sourceBuffer, __in DWORD alignPad)
+EmitBufferManager<TAlloc, TPreReservedAlloc, SyncObject>::CommitBuffer(TEmitBufferAllocation* allocation, __out_bcount(allocation->bytesCommitted) BYTE* destBuffer, __in size_t bytes, __in_bcount(bytes) const BYTE* sourceBuffer, __in DWORD alignPad)
 {
     AutoRealOrFakeCriticalSection<SyncObject> autoCs(&this->criticalSection);
 
     Assert(destBuffer != nullptr);
     Assert(allocation != nullptr);
+
+    // Must have at least enough room in destBuffer for the initial skipped bytes plus the bytes we're going to write
+    AnalysisAssert(allocation->bytesUsed + bytes + alignPad <= allocation->bytesCommitted);
 
     BYTE *currentDestBuffer = destBuffer + allocation->GetBytesUsed();
     char *bufferToFlush = allocation->allocation->address + allocation->GetBytesUsed();
@@ -427,6 +433,11 @@ EmitBufferManager<TAlloc, TPreReservedAlloc, SyncObject>::CommitBuffer(TEmitBuff
     // Copy the contents and set the alignment pad
     while(bytesLeft != 0)
     {
+        // currentDestBuffer must still point to somewhere in the interior of
+        // destBuffer.
+        AnalysisAssert(destBuffer <= currentDestBuffer);
+        AnalysisAssert(currentDestBuffer < destBuffer + allocation->bytesCommitted);
+
         DWORD spaceInCurrentPage = AutoSystemInfo::PageSize - ((size_t)currentDestBuffer & (AutoSystemInfo::PageSize - 1));
         size_t bytesToChange = bytesLeft > spaceInCurrentPage ? spaceInCurrentPage : bytesLeft;
 
